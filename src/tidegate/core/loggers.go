@@ -8,17 +8,17 @@ import (
 var RootLogger = logging.MustGetLogger("cfdnsupdater")
 
 func InitLoggers(verbose bool, quiet bool, syslog bool) {
-	var format = logging.MustStringFormatter(`%{color}%{time:15:04:05.000} | %{level:.10s} ▶%{color:reset} %{message}`)
-	var outstream *os.File
+	format := logging.MustStringFormatter(`%{color}%{time:15:04:05.000} | %{level:.10s} ▶%{color:reset} %{message}`)
+	var outstream * os.File
 	if quiet {
 		outstream = os.NewFile(uintptr(3), "/dev/null")
 	} else {
-	  outstream = os.Stderr
+		outstream = os.Stderr
 	}
 
-	var backend = logging.NewLogBackend(outstream, "", 0)
-	var formatter = logging.NewBackendFormatter(backend, format)
-	var leveledBackend = logging.AddModuleLevel(formatter)
+	backend := logging.NewLogBackend(outstream, "", 0)
+	formatter := logging.NewBackendFormatter(backend, format)
+	leveledBackend := logging.AddModuleLevel(formatter)
 
 	if verbose {
 		leveledBackend.SetLevel(logging.DEBUG, "")
