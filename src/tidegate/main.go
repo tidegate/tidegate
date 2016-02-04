@@ -1,26 +1,24 @@
 package main
 
 import (
-	. "tidegate/core"
+	"tidegate/core"
   "os"	
 )
 
 
-
-
 func main() {
-
-  
-	var args = ParseArgs(os.Args[1:])
-	InitLoggers(args.Verbose, args.Quiet, args.Syslog)
-	dockerMonitor,_ := NewDockerMonitor(args.DockerDaemonAddr)
-	backend, _ := NewNGINXBackend("./", "/usr/sbin")
+  servers := core.NewServerStorage()
+	var args = core.ParseArgs(os.Args[1:])
+	core.InitLoggers(args.Verbose, args.Quiet, args.Syslog)
+	dockerMonitor,_ := core.NewDockerMonitor(args.DockerDaemonAddr,servers)
+	backend, _ := core.NewNGINXBackend("./", "/usr/sbin")
+	servers.AddObserver(backend)
 	err := backend.Start()
 	if err == nil {
-    dockerMonitor.AddBackend(backend)
-	  dockerMonitor.Start()
+    dockerMonitor.Start()
+	  dockerMonitor.Join()
 	} else {
-	  RootLogger.Fatalf("Unable to start backend: %s",err.Error())
+	  core.RootLogger.Fatalf("Unable to start backend: %s",err.Error())
 	}
 	
 	

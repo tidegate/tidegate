@@ -17,10 +17,10 @@ func NewServerStorage() (res *ServerStorage) {
 	res.observers = mapset.NewSet()
 	return
 }
-func (self ServerStorage) AddServer(domain string, externalPort int, sslEnabled bool) (res *Server, err error) {
+func (self *ServerStorage) AddServer(domain string, externalPort int64) (res *Server, err error) {
 	var id = fmt.Sprintf("%v:%v", domain, externalPort)
 	if !self.Contains(domain, externalPort) {
-		res = NewServer(domain, externalPort, sslEnabled)
+		res = NewServer(domain, externalPort)
 		self.servers[id] = res
 		RootLogger.Debugf("Added new server '%s'", id)
 		for obs := range self.observers.Iter() {
@@ -32,14 +32,14 @@ func (self ServerStorage) AddServer(domain string, externalPort int, sslEnabled 
 	return
 }
 
-func (self ServerStorage) RemoveServer(domain string, externalPort int) (err error) {
+func (self *ServerStorage) RemoveServer(domain string, externalPort int64) (err error) {
 	var id = fmt.Sprintf("%v:%v", domain, externalPort)
 	res,err := self.GetServer(domain, externalPort)
 	if err == nil {
 		delete(self.servers, id)
 		RootLogger.Debugf("Deleted server '%s'", id)
 		for _,endpoint := range res.Endpoints {
-		  res.RemoveEndpoint(endpoint.IP, endpoint.Port)
+		  res.RemoveEndpoint(endpoint.ContainerId, endpoint.IP, endpoint.Port)
 		}
 	} else {
 		err = errors.New(fmt.Sprintf("Server '%s:%s' does not exists", id))
@@ -47,17 +47,18 @@ func (self ServerStorage) RemoveServer(domain string, externalPort int) (err err
 	return
 }
 
-func (self ServerStorage) Contains(domain string, port int) bool {
-	var _, contains = self.servers[fmt.Sprintf("%s:%s", domain, port)]
+func (self *ServerStorage) Contains(domain string, port int64) bool {
+	var _, contains = self.servers[fmt.Sprintf("%v:%v", domain, port)]
 	return contains
 }
 
-func (self ServerStorage) GetServer(domain string, port int) (res *Server, err error) {
+func (self *ServerStorage) GetServer(domain string, port int64) (res *Server, err error) {
 	var id = fmt.Sprintf("%v:%v", domain, port)
 	if self.Contains(domain, port) {
+	  RootLogger.Debugf("Server '%s' exists",id)
 		res = self.servers[id]
 	} else {
-		err = errors.New(fmt.Sprintf("Server '%s:%s' does not exists", id))
+		err = errors.New(fmt.Sprintf("Server '%s' does not exists", id))
 	}
 	return
 }
@@ -74,14 +75,14 @@ func (self *ServerStorage) Iter() <-chan interface{} {
 	return ch
 }
 
-func (self ServerStorage) AddObserver(obs ServerChangeObserver) {
+func (self *ServerStorage) AddObserver(obs ServerChangeObserver) {
   self.observers.Add(obs)
   for _, server :=range self.servers {
 	  server.AddObserver(obs)
 	}
 }
 
-func (self ServerStorage) RemoveObserver(obs ServerChangeObserver) {
+func (self *ServerStorage) RemoveObserver(obs ServerChangeObserver) {
 	for _, server :=range self.servers {
 	  server.RemoveObserver(obs)
 	}
