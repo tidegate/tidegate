@@ -1,4 +1,4 @@
-package core
+package backends
 
 import (
 	"errors"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"text/template"
+	"tidegate/core/servers"
 )
 
 /**************************************************/
@@ -37,7 +38,7 @@ func NewNGINXDaemon(configPath string, binPath string) (res *NGINXDaemon, err er
 				re := regexp.MustCompile("pid (?P<Pidfile>[^;]*)")
 				matches := re.FindStringSubmatch(line)
 				if len(matches) > 0 {
-					RootLogger.Debugf("PID file for nginx daemon is '%v'", matches[1])
+					logger.Debugf("PID file for nginx daemon is '%v'", matches[1])
 					res.pidPath = matches[1]
 				} else {
 					err = errors.New(fmt.Sprintf("Invalid 'pid' directive the config '%s'", configPath))
@@ -52,11 +53,11 @@ func NewNGINXDaemon(configPath string, binPath string) (res *NGINXDaemon, err er
 }
 
 func (self *NGINXDaemon) Start() (err error) {
-	RootLogger.Debug("Starting NGINX daemon...")
+	logger.Debug("Starting NGINX daemon...")
 	self.cmd = exec.Command(self.binPath, "-c", self.configPath)
 	go self.cmd.Run()
 	if err == nil {
-	  RootLogger.Debug("NGINX daemon successfuly started")
+		logger.Debug("NGINX daemon successfuly started")
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to start NGINX daemon: %s", err.Error()))
 	}
@@ -69,27 +70,27 @@ func (self *NGINXDaemon) sendSignal(signal syscall.Signal) (err error) {
 	if err == nil {
 		pid, err := strconv.Atoi(string(dat[0 : len(dat)-1]))
 		if err != nil {
-			RootLogger.Debugf("Sending signal '%v' to nginx (pid:(%v))", signal, pid)
+			logger.Debugf("Sending signal '%v' to nginx (pid:(%v))", signal, pid)
 			err = syscall.Kill(pid, signal)
 			if err != nil {
-				RootLogger.Warningf("Unable send signal (%s).", err.Error())
+				logger.Warningf("Unable send signal (%s).", err.Error())
 			}
 		} else {
-			RootLogger.Warningf("Invalid value in PID file (%s).", pidFilePath)
+			logger.Warningf("Invalid value in PID file (%s).", pidFilePath)
 		}
 	} else {
-		RootLogger.Warningf("Unable to read PID file (%s). Are you sure NGINX is running ?", pidFilePath)
+		logger.Warningf("Unable to read PID file (%s). Are you sure NGINX is running ?", pidFilePath)
 	}
 	return
 }
 func (self *NGINXDaemon) Stop() (err error) {
-	RootLogger.Debugf("Stopping nginx daemon")
+	logger.Debugf("Stopping nginx daemon")
 	return self.sendSignal(syscall.SIGQUIT)
 }
 
 func (self *NGINXDaemon) Join() (err error) {
-  err = self.cmd.Wait()
-  return
+	err = self.cmd.Wait()
+	return
 }
 func (self *NGINXDaemon) Status() bool {
 	pidFilePath := filepath.Join(self.configPath, "nginx.pid")
@@ -98,7 +99,7 @@ func (self *NGINXDaemon) Status() bool {
 }
 
 func (self *NGINXDaemon) Reload() error {
-	RootLogger.Debugf("Reloading nginx daemon")
+	logger.Debugf("Reloading nginx daemon")
 	return self.sendSignal(syscall.SIGHUP)
 }
 
@@ -110,10 +111,12 @@ type NGINXBackend struct {
 	serversDirPath string
 	tmpDirPath     string
 	serverTemplate string
+	Observer       *servers.ServerChangeObserver
 }
 
 func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, err error) {
 	res = &NGINXBackend{}
+	res.Observer = servers.NewServerChangeObserver()
 	absOutputDirPath, err := filepath.Abs(runDirPath)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("Invalid output directory path '%s': Unable to compute absolute path", runDirPath))
@@ -123,7 +126,7 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 	res.configDirPath = filepath.Join(absOutputDirPath, "config")
 	err = os.MkdirAll(res.configDirPath, 0700)
 	if err == nil {
-		RootLogger.Debugf("Successfuly created configuration directory '%s'", res.configDirPath)
+		logger.Debugf("Successfuly created configuration directory '%s'", res.configDirPath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to create configuration directory '%s'", res.configDirPath))
 		return
@@ -132,7 +135,7 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 	res.tmpDirPath = filepath.Join(absOutputDirPath, "tmp")
 	err = os.MkdirAll(res.tmpDirPath, 0700)
 	if err == nil {
-		RootLogger.Debugf("Successfuly created tmp directory '%s'", res.tmpDirPath)
+		logger.Debugf("Successfuly created tmp directory '%s'", res.tmpDirPath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to create tmp directory '%s'", res.tmpDirPath))
 		return
@@ -141,7 +144,7 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 	logDirPath := filepath.Join(absOutputDirPath, "logs")
 	err = os.MkdirAll(logDirPath, 0700)
 	if err == nil {
-		RootLogger.Debugf("Created NGINX logs directory '%s'", logDirPath)
+		logger.Debugf("Created NGINX logs directory '%s'", logDirPath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to create NGINX logs directory '%s': %s", logDirPath, err.Error()))
 		return
@@ -150,7 +153,7 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 	letsEncryptDirPath := filepath.Join(res.tmpDirPath, "letsencrypt")
 	err = os.MkdirAll(letsEncryptDirPath, 0700)
 	if err == nil {
-		RootLogger.Debugf("Created LetsEncrypt directory '%s'", letsEncryptDirPath)
+		logger.Debugf("Created LetsEncrypt directory '%s'", letsEncryptDirPath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to create LetsEncrypt directory '%s': %s", letsEncryptDirPath, err.Error()))
 		return
@@ -159,7 +162,7 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 	res.serversDirPath = filepath.Join(res.configDirPath, "servers")
 	err = os.MkdirAll(res.serversDirPath, 0700)
 	if err == nil {
-		RootLogger.Debugf("Created servers directory '%s'", res.serversDirPath)
+		logger.Debugf("Created servers directory '%s'", res.serversDirPath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to create servers directory '%s': %s", res.serversDirPath, err.Error()))
 		return
@@ -249,19 +252,19 @@ http {
 		letsEncryptDirPath})
 	fi.Close()
 	if err == nil {
-		RootLogger.Debugf("NGINX configuration file '%s' successfully generated", nginxConfFilePath)
+		logger.Debugf("NGINX configuration file '%s' successfully generated", nginxConfFilePath)
 	} else {
 		err = errors.New(fmt.Sprintf("Unable to generate NGINX configuration file '%s': %s", nginxConfFilePath, err.Error()))
 		return
 	}
 	res.daemon, err = NewNGINXDaemon(filepath.Join(res.configDirPath, "nginx.conf"), filepath.Join(binDirPath, "nginx"))
 	if err == nil {
-		RootLogger.Debugf("Docker daemon successfully created '%s'")
+		logger.Debugf("Docker daemon successfully created '%s'")
 	} else {
 		err = errors.New(fmt.Sprintf("Unable create NGINX daemon: %s", err.Error()))
 		return
 	}
-	
+
 	res.serverTemplate = `upstream {{ Replace .Domain "." "_" -1 }} {
   least_conn;
 {{range .Endpoints}}  server {{.IP}}:{{.Port}} max_fails=3 fail_timeout=60 weight=1; 
@@ -283,20 +286,41 @@ server {
 
 }`
 
-//{{if .IsSSL()}}
-//    ssl on;
-//    ssl_certificate      /etc/letsencrypt/live/$server.domain/fullchain.pem;
-//    ssl_certificate_key  /etc/letsencrypt/live/$server.domain/privkey.pem;
-//    ssl_session_cache  builtin:1000  shared:SSL:10m;
-//    ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
-//    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
-//    ssl_prefer_server_ciphers on;
-//{{end}}
+	//{{if .IsSSL()}}
+	//    ssl on;
+	//    ssl_certificate      /etc/letsencrypt/live/$server.domain/fullchain.pem;
+	//    ssl_certificate_key  /etc/letsencrypt/live/$server.domain/privkey.pem;
+	//    ssl_session_cache  builtin:1000  shared:SSL:10m;
+	//    ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
+	//    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+	//    ssl_prefer_server_ciphers on;
+	//{{end}}
 	return
 }
 
 func (self *NGINXBackend) Start() (err error) {
+	logger.Debugf("Staring backend")
 	go self.daemon.Start()
+
+	go func() {
+	  logger.Debugf("Start observation")
+		for {
+			res := self.Observer.WaitForEvent()
+			self.HandleEvent(res)
+		}
+	}()
+
+	return
+}
+
+func (self *NGINXBackend) HandleEvent(event *servers.ServerStateChangeEvent) (err error) {
+  logger.Debugf("Handling event")
+	switch event.Action {
+	case "CREATE":
+		self.ProcessServerCreation(&event.Server)
+	case "DELETE":
+		self.ProcessServerCreation(&event.Server)
+	}
 	return
 }
 
@@ -305,8 +329,18 @@ func (self *NGINXBackend) Stop() (err error) {
 	return
 }
 
-func (self *NGINXBackend) HandleEndpointCreation(server *Server, endpointId string) (err error) {
-	RootLogger.Debugf("Generate configuration for '%s' %v", server.GetID(), len(server.Endpoints))
+func (self *NGINXBackend) ProcessServerCreation(server *servers.Server) (err error) {
+	logger.Debugf("Handling server creation")
+	return
+}
+
+func (self *NGINXBackend) ProcessServerDeletion(server *servers.Server) (err error) {
+	logger.Debugf("Handling server deletion")
+	return
+}
+
+func (self *NGINXBackend) HandleEndpointCreation(server *servers.Server, endpointId string) (err error) {
+	logger.Debugf("Generate configuration for '%s' %v", server.GetID(), len(server.Endpoints))
 	funcMap := template.FuncMap{
 		"Replace": strings.Replace,
 	}
@@ -317,14 +351,14 @@ func (self *NGINXBackend) HandleEndpointCreation(server *Server, endpointId stri
 		fi, err := os.Create(serverConfigFilePath)
 		if err == nil {
 			err = t.Execute(fi, *server)
-			if(err != nil) {
-			  err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
-			  RootLogger.Errorf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error())
-			  os.Remove(filepath.Join(self.serversDirPath, server.Domain))
+			if err != nil {
+				err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
+				logger.Errorf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error())
+				os.Remove(filepath.Join(self.serversDirPath, server.Domain))
 			} else {
-			  fi.Close()
+				fi.Close()
 			}
-			
+
 		} else {
 			err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
 		}
@@ -334,7 +368,7 @@ func (self *NGINXBackend) HandleEndpointCreation(server *Server, endpointId stri
 	self.daemon.Reload()
 	return
 }
-func (self *NGINXBackend) HandleEndpointDeletion(server *Server, endpointId string) (err error) {
+func (self *NGINXBackend) HandleEndpointDeletion(server *servers.Server, endpointId string) (err error) {
 	if len(server.Endpoints) == 0 {
 		err = os.Remove(filepath.Join(self.serversDirPath, server.Domain))
 	}
