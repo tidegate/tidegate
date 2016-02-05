@@ -2,17 +2,20 @@ package main
 
 import (
 	"tidegate/core"
+	"tidegate/core/servers"
+	"tidegate/core/backends"
   "os"	
 )
 
 
 func main() {
-  servers := core.NewServerStorage()
+  serverStorage := servers.NewServerStorage()
+  
 	var args = core.ParseArgs(os.Args[1:])
 	core.InitLoggers(args.Verbose, args.Quiet, args.Syslog)
-	dockerMonitor,_ := core.NewDockerMonitor(args.DockerDaemonAddr,servers)
-	backend, _ := core.NewNGINXBackend("./", "/usr/sbin")
-	servers.AddObserver(backend)
+	backend, _ := backends.NewNGINXBackend("./", "/usr/sbin")
+	serverStorage.AddServerObserver(backend.Observer)
+	dockerMonitor,_ := core.NewDockerMonitor(args.DockerDaemonAddr,serverStorage)
 	err := backend.Start()
 	if err == nil {
     dockerMonitor.Start()

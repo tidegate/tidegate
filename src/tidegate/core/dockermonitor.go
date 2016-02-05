@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"tidegate/core/servers"
 )
 
 type TideGateDescriptor struct {
@@ -25,9 +26,8 @@ type DockerMonitor struct {
 	daemonAddr string
 
 	client        *dockerclient.DockerClient
-	servers       *ServerStorage
+	servers       *servers.ServerStorage
 	eventStopChan chan struct{}
-	daemon        *NGINXDaemon
 }
 
 //func (self *DockerMonitor) waitForInterrupt() {
@@ -40,11 +40,9 @@ type DockerMonitor struct {
 //}
 
 func (self *DockerMonitor) EventCallback(e *dockerclient.Event) {
-	RootLogger.Infof("%v", e)
-	container, err := self.client.InspectContainer(e.ID)
 
-	if err == nil {
-	  RootLogger.Debugf("%v",container)
+	container, err := self.client.InspectContainer(e.ID)
+	if err == nil {	  
 		switch e.Status {
 		case "kill":
 			{
@@ -54,7 +52,7 @@ func (self *DockerMonitor) EventCallback(e *dockerclient.Event) {
 			}
 		case "start":
 			{
-			  RootLogger.Debugf("Container '%s' has been started", container.Name)
+			  RootLogger.Debugf("Container '%s' has been stopped", container.Name)
 				self.ProcessContainerStop(container)
 				break
 			}
@@ -110,14 +108,14 @@ func (self *DockerMonitor) Start() (err error) {
 	//		}
 	//	}
 
-	self.daemon = &NGINXDaemon{configPath: "/home/aacebedo/Seafile/Private/workspace/tidegate_go/bin", binPath: "/usr/sbin"}
-	self.daemon.Start()
+//	self.daemon = &NGINXDaemon{configPath: "/home/aacebedo/Seafile/Private/workspace/tidegate_go/bin", binPath: "/usr/sbin"}
+//	self.daemon.Start()
 	//daemon.Stop()
 	return
 }
 
 func (self *DockerMonitor) Stop() {
-	self.daemon.Stop()
+	//self.daemon.Stop()
 }
 
 func (self *DockerMonitor) Join() {
@@ -139,17 +137,15 @@ func (self *DockerMonitor) ProcessContainerStop(container *dockerclient.Containe
 		var err = json.Unmarshal([]byte(label), &descriptor)
 		if err == nil {
 			for k, v := range container.NetworkSettings.Ports {
-				RootLogger.Errorf("%v %v", k, v)
+				
 				servicePort := strings.Split(k, "/")
 				servicePort2, err := strconv.Atoi(servicePort[0])
 				internalPort, err := strconv.Atoi(v[0].HostPort)
 				var ip = net.ParseIP(v[0].HostIp)
 				if ip != nil && err == nil {
-					server, err := self.servers.GetServer(descriptor.Domain, int64(servicePort2))
+					server, err := self.servers.GetServer(servers.NewServerId(descriptor.Domain, int64(servicePort2)))
 					if err == nil {
-						server.RemoveEndpoint(container.Name, ip, int64(internalPort))
-						RootLogger.Debugf("Length of endpoint %v", len(server.Endpoints))
-						RootLogger.Debugf("External port %v, internal port %v", internalPort, servicePort2)
+						server.RemoveEndpoint(servers.NewEndpointId(container.Name, ip, int64(internalPort)))
 					} else {
 						err = errors.New(fmt.Sprintf("Server '%v:%v' not been found, cannot remove endpoint from it", descriptor.Domain, servicePort2))
 					}
@@ -181,13 +177,12 @@ func (self *DockerMonitor) ProcessContainerStart(container *dockerclient.Contain
 		var err = json.Unmarshal([]byte(label), &descriptor)
 		if err == nil {
 			for k, v := range container.NetworkSettings.Ports {
-				RootLogger.Errorf("%v %v", k, v)
 				servicePort := strings.Split(k, "/")
 				servicePort2, err := strconv.Atoi(servicePort[0])
 				internalPort, err := strconv.Atoi(v[0].HostPort)
 				var ip = net.ParseIP(v[0].HostIp)
 				if ip != nil && err == nil {
-					server, err := self.servers.GetServer(descriptor.Domain, int64(servicePort2))
+					server, err := self.servers.GetServer(servers.NewServerId(descriptor.Domain, int64(servicePort2)))
 					if err != nil {
 						RootLogger.Debugf("Server '%v:%v' not been found, creating it", descriptor.Domain, servicePort2)
 						server, _ = self.servers.AddServer(descriptor.Domain, int64(servicePort2))
@@ -200,8 +195,6 @@ func (self *DockerMonitor) ProcessContainerStart(container *dockerclient.Contain
 					isSSL := err == nil
 
 					server.AddEndpoint(container.Name, ip, int64(internalPort), isSSL)
-					RootLogger.Debugf("Length of endpoint %v", len(server.Endpoints))
-					RootLogger.Debugf("External port %v, internal port %v", internalPort, servicePort2)
 				} else {
 					RootLogger.Warningf("Port binding ignored for container '%s': Invalid IPAddress", container.Name)
 				}
@@ -221,7 +214,7 @@ func (self *DockerMonitor) ProcessContainerStart(container *dockerclient.Contain
 	return
 }
 
-func NewDockerMonitor(dockerAddr string, servers *ServerStorage) (res *DockerMonitor, err error) {
+func NewDockerMonitor(dockerAddr string, servers *servers.ServerStorage) (res *DockerMonitor, err error) {
 	res = &DockerMonitor{}
 	res.client, _ = dockerclient.NewDockerClient(dockerAddr, nil)
 	info, _ := res.client.Info()
