@@ -5,10 +5,10 @@ import (
 	"os"
 )
 
-var RootLogger = logging.MustGetLogger("tidegate")
+var logger = logging.MustGetLogger("tidegate")
 
 func InitLoggers(verbose bool, quiet bool, syslog bool) {
-	format := logging.MustStringFormatter(`%{color}%{time:15:04:05.000} | %{level:.10s} ▶%{color:reset} %{message}`)
+	format := logging.MustStringFormatter(`%{color}%{time:15:04:05.000} | %{longfunc}  %{level:.10s} ▶%{color:reset} %{message}`)
 	var outstream * os.File
 	if quiet {
 		outstream = os.NewFile(uintptr(3), "/dev/null")

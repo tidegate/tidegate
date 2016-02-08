@@ -7,21 +7,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"text/template"
-	"tidegate/core/servers"
+	"tidegate/servers"
 )
 
 /**************************************************/
 /**************************************************/
 type NGINXDaemon struct {
-	configPath string
-	binPath    string
-	pidPath    string
-	cmd        *exec.Cmd
+	configPath  string
+	binPath     string
+	pidFilePath string
+	cmd         *exec.Cmd
 }
 
 func NewNGINXDaemon(configPath string, binPath string) (res *NGINXDaemon, err error) {
@@ -39,7 +40,7 @@ func NewNGINXDaemon(configPath string, binPath string) (res *NGINXDaemon, err er
 				matches := re.FindStringSubmatch(line)
 				if len(matches) > 0 {
 					logger.Debugf("PID file for nginx daemon is '%v'", matches[1])
-					res.pidPath = matches[1]
+					res.pidFilePath = matches[1]
 				} else {
 					err = errors.New(fmt.Sprintf("Invalid 'pid' directive the config '%s'", configPath))
 				}
@@ -65,21 +66,20 @@ func (self *NGINXDaemon) Start() (err error) {
 }
 
 func (self *NGINXDaemon) sendSignal(signal syscall.Signal) (err error) {
-	pidFilePath := filepath.Join(self.configPath, "nginx.pid")
-	dat, err := ioutil.ReadFile(pidFilePath)
+	dat, err := ioutil.ReadFile(self.pidFilePath)
 	if err == nil {
 		pid, err := strconv.Atoi(string(dat[0 : len(dat)-1]))
-		if err != nil {
+		if err == nil {
 			logger.Debugf("Sending signal '%v' to nginx (pid:(%v))", signal, pid)
 			err = syscall.Kill(pid, signal)
 			if err != nil {
 				logger.Warningf("Unable send signal (%s).", err.Error())
 			}
 		} else {
-			logger.Warningf("Invalid value in PID file (%s).", pidFilePath)
+			logger.Warningf("Invalid value in PID file (%s).", self.pidFilePath)
 		}
 	} else {
-		logger.Warningf("Unable to read PID file (%s). Are you sure NGINX is running ?", pidFilePath)
+		logger.Warningf("Unable to read PID file (%s). Are you sure NGINX is running ?", self.pidFilePath)
 	}
 	return
 }
@@ -110,13 +110,11 @@ type NGINXBackend struct {
 	configDirPath  string
 	serversDirPath string
 	tmpDirPath     string
-	serverTemplate string
-	Observer       *servers.ServerChangeObserver
+	certsDirPath     string
 }
 
 func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, err error) {
 	res = &NGINXBackend{}
-	res.Observer = servers.NewServerChangeObserver()
 	absOutputDirPath, err := filepath.Abs(runDirPath)
 	if err != nil {
 		err = errors.New(fmt.Sprintf("Invalid output directory path '%s': Unable to compute absolute path", runDirPath))
@@ -149,16 +147,16 @@ func NewNGINXBackend(runDirPath string, binDirPath string) (res *NGINXBackend, e
 		err = errors.New(fmt.Sprintf("Unable to create NGINX logs directory '%s': %s", logDirPath, err.Error()))
 		return
 	}
-
-	letsEncryptDirPath := filepath.Join(res.tmpDirPath, "letsencrypt")
-	err = os.MkdirAll(letsEncryptDirPath, 0700)
+	
+	res.certsDirPath = filepath.Join(absOutputDirPath, "certs")
+	err = os.MkdirAll(res.certsDirPath, 0700)
 	if err == nil {
-		logger.Debugf("Created LetsEncrypt directory '%s'", letsEncryptDirPath)
+		logger.Debugf("Created NGINX certificates directory '%s'", res.certsDirPath)
 	} else {
-		err = errors.New(fmt.Sprintf("Unable to create LetsEncrypt directory '%s': %s", letsEncryptDirPath, err.Error()))
+		err = errors.New(fmt.Sprintf("Unable to create NGINX certs directory '%s': %s", res.certsDirPath, err.Error()))
 		return
 	}
-
+	
 	res.serversDirPath = filepath.Join(res.configDirPath, "servers")
 	err = os.MkdirAll(res.serversDirPath, 0700)
 	if err == nil {
@@ -199,12 +197,6 @@ http {
 	default_type application/octet-stream;
 
 	##
-	# SSL Settings
-	##
-	ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # Dropping SSLv3, ref: POODLE
-	ssl_prefer_server_ciphers on;
-
-	##
 	# Logging Settings
 	##
 	access_log {{.AccessLogPath}};
@@ -216,25 +208,14 @@ http {
 	gzip on;
 	gzip_disable "msie6";
 
+ 	server {
+        return 404;
+  }
 	##
 	# Virtual Host Configs
 	##
 	include {{.ServerConfigurationPath}};
-	
- server {
-   listen 80;
-   charset utf-8;
-   location "/.well-known" {
-     root {{.LetsEncryptDirPath}};
-   } 
-  }
-  server {
-     listen 443;
-     charset utf-8;
-     location "/.well-known" {
-       root {{.LetsEncryptDirPath}};
-     } 
-  }
+
 }`
 	var t = template.New("NGINX Configuration")
 	t, _ = t.Parse(configTemplate)
@@ -243,13 +224,11 @@ http {
 		AccessLogPath           string
 		ErrorLogPath            string
 		ServerConfigurationPath string
-		LetsEncryptDirPath      string
 	}{
 		filepath.Join(res.tmpDirPath, "nginx.pid"),
 		filepath.Join(logDirPath, "http_access.log"),
 		filepath.Join(logDirPath, "http_error.log"),
-		filepath.Join(res.configDirPath, "servers", "*"),
-		letsEncryptDirPath})
+		filepath.Join(res.configDirPath, "servers", "*")})
 	fi.Close()
 	if err == nil {
 		logger.Debugf("NGINX configuration file '%s' successfully generated", nginxConfFilePath)
@@ -265,113 +244,118 @@ http {
 		return
 	}
 
-	res.serverTemplate = `upstream {{ Replace .Domain "." "_" -1 }} {
-  least_conn;
-{{range .Endpoints}}  server {{.IP}}:{{.Port}} max_fails=3 fail_timeout=60 weight=1; 
+	go res.daemon.Start()
+	return
+}
+
+func generateUpstreamName(serverId servers.ServerId) (res string) {
+  res = strings.Replace(string(serverId),".","_",-1)
+  return
+}
+func (self *NGINXBackend) HandleEndpointAddition(server *servers.Server) (err error) {
+	logger.Debugf("Generate configuration for '%s' %v", server.GetId(), len(server.Endpoints))
+
+  serverTemplate := `upstream {{ generateUpstreamName .Server.GetId  }} {
+least_conn;
+{{range .Server.Endpoints}}  server {{.IP}}:{{.Port}} max_fails=3 fail_timeout=60 weight=1; 
 {{end}}
 }
 
 server {
-   listen {{.ExternalPort}};
-   server_name {{.Domain}};
-   charset utf-8;
- 
-   location / {
-     proxy_pass http://{{ Replace .Domain "." "_" -1 }}/;
-     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-     proxy_set_header Host $host;
-     proxy_set_header X-Real-IP $remote_addr;
-     proxy_set_header X-Forwarded-Proto $scheme;
+
+  if ($host != {{.Server.Domain}}) {
+        return 403;
    }
-
-}`
-
-	//{{if .IsSSL()}}
-	//    ssl on;
-	//    ssl_certificate      /etc/letsencrypt/live/$server.domain/fullchain.pem;
-	//    ssl_certificate_key  /etc/letsencrypt/live/$server.domain/privkey.pem;
-	//    ssl_session_cache  builtin:1000  shared:SSL:10m;
-	//    ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
-	//    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
-	//    ssl_prefer_server_ciphers on;
-	//{{end}}
-	return
+   charset utf-8;
+   server_name {{.Server.Domain}};
+   {{if .Server.IsSSL}}
+     listen {{.Server.ExternalPort}} ssl;
+      ssl_certificate      {{ .CertsDirPath }}/{{.Server.GetRootDomain }}/fullchain.pem;
+      ssl_certificate_key  {{ .CertsDirPath }}/{{.Server.GetRootDomain }}/privkey.pem;
+      ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
+      ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+      ssl_prefer_server_ciphers on;
+      location / {
+        proxy_pass http://{{ generateUpstreamName .Server.GetId }}/;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect http://{{generateUpstreamName .Server.GetId}} https://{{.Server.Domain}};
+      }
+  {{else}}
+     listen {{.Server.ExternalPort}};
+     location / {
+       proxy_pass http://{{ generateUpstreamName .Server.GetId }}/;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-Proto $scheme;
+     }  
+  {{end}}
 }
 
-func (self *NGINXBackend) Start() (err error) {
-	logger.Debugf("Staring backend")
-	go self.daemon.Start()
+#server {
+#   charset utf-8;
+#   server_name {{.Server.Domain}};
+#   location "/.well-known" {
+#   root {{ .TmpDirPath }};
+#   }
+# }`
 
-	go func() {
-	  logger.Debugf("Start observation")
-		for {
-			res := self.Observer.WaitForEvent()
-			self.HandleEvent(res)
+	if len(server.Endpoints) > 0 {
+		funcMap := template.FuncMap{
+			"generateUpstreamName": func(serverId servers.ServerId) string {return strings.Replace(string(serverId),".","_",-1)},
 		}
-	}()
-
-	return
-}
-
-func (self *NGINXBackend) HandleEvent(event *servers.ServerStateChangeEvent) (err error) {
-  logger.Debugf("Handling event")
-	switch event.Action {
-	case "CREATE":
-		self.ProcessServerCreation(&event.Server)
-	case "DELETE":
-		self.ProcessServerCreation(&event.Server)
-	}
-	return
-}
-
-func (self *NGINXBackend) Stop() (err error) {
-	err = self.daemon.Stop()
-	return
-}
-
-func (self *NGINXBackend) ProcessServerCreation(server *servers.Server) (err error) {
-	logger.Debugf("Handling server creation")
-	return
-}
-
-func (self *NGINXBackend) ProcessServerDeletion(server *servers.Server) (err error) {
-	logger.Debugf("Handling server deletion")
-	return
-}
-
-func (self *NGINXBackend) HandleEndpointCreation(server *servers.Server, endpointId string) (err error) {
-	logger.Debugf("Generate configuration for '%s' %v", server.GetID(), len(server.Endpoints))
-	funcMap := template.FuncMap{
-		"Replace": strings.Replace,
-	}
-	t := template.New(fmt.Sprintf("Configuration for server %s", server.Domain)).Funcs(funcMap)
-	t, err = t.Parse(self.serverTemplate)
-	if err == nil {
-		serverConfigFilePath := filepath.Join(self.serversDirPath, server.Domain)
-		fi, err := os.Create(serverConfigFilePath)
+		t := template.New(fmt.Sprintf("Configuration for server %s", server.Domain)).Funcs(funcMap)
+		t, err = t.Parse(serverTemplate)
 		if err == nil {
-			err = t.Execute(fi, *server)
-			if err != nil {
-				err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
-				logger.Errorf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error())
-				os.Remove(filepath.Join(self.serversDirPath, server.Domain))
+			serverConfigFilePath := filepath.Join(self.serversDirPath, string(server.GetId()))
+			fi, err := os.Create(serverConfigFilePath)
+			if err == nil {
+				err = t.Execute(fi, struct {
+		                        Server   *servers.Server
+                        		CertsDirPath      string
+                        		TmpDirPath      string
+                        	}{server,self.certsDirPath,self.tmpDirPath})
+				if err != nil {
+					err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
+					logger.Errorf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error())
+					os.Remove(filepath.Join(self.serversDirPath, server.Domain))
+				} else {
+					fi.Sync()
+					fi.Close()
+				}
 			} else {
-				fi.Close()
+				err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
 			}
-
 		} else {
-			err = errors.New(fmt.Sprintf("Unable to create server configuration file '%s': %s", serverConfigFilePath, err.Error()))
+			err = errors.New(fmt.Sprintf("Unable to generate configuration for server '%s': %s", server.Domain, err.Error()))
 		}
 	} else {
-		err = errors.New(fmt.Sprintf("Unable to generate configuration for server '%s': %s", server.Domain, err.Error()))
+		os.Remove(filepath.Join(self.serversDirPath, server.Domain))
+	}
+
+	self.daemon.Reload()
+	return
+}
+func (self *NGINXBackend) HandleEndpointRemoval(server *servers.Server) (err error) {
+	if len(server.Endpoints) == 0 {
+		err = os.Remove(filepath.Join(self.serversDirPath, string(server.GetId())))
 	}
 	self.daemon.Reload()
 	return
 }
-func (self *NGINXBackend) HandleEndpointDeletion(server *servers.Server, endpointId string) (err error) {
-	if len(server.Endpoints) == 0 {
-		err = os.Remove(filepath.Join(self.serversDirPath, server.Domain))
+
+func (self *NGINXBackend) HandleEvent(value interface{}) {
+	switch value.(type) {
+	case *servers.EndpointAdditionEvent:
+		event := value.(*servers.EndpointAdditionEvent)
+		self.HandleEndpointAddition(event.Server)
+	case *servers.EndpointRemovalEvent:
+		event := value.(*servers.EndpointRemovalEvent)
+		self.HandleEndpointRemoval(event.Server)
+	default:
+		logger.Warningf("Event of type '%s' ignored", reflect.TypeOf(value))
 	}
-	self.daemon.Reload()
-	return
 }
