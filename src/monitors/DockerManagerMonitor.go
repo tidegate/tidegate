@@ -1,15 +1,13 @@
 package monitors
 
 import (
-	"net"
 )
 
 type ContainerEndpoint struct {
 	Domain       string
-	IP           net.IP
-	ExternalPort int64
-	InternalPort int64
-	IsSSL        bool
+	InternalHostPort string
+	ExternalHostPort string
+	scheme        string
 }
 
 type ContainerEndpointAdditionEvent struct {

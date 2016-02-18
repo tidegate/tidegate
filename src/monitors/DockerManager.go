@@ -1,25 +1,24 @@
 package monitors
 
 import (
-	
 	"encoding/json"
 	//"errors"
-	
+
+	"fmt"
+	"github.com/aacebedo/tidegate/src/patterns"
 	"github.com/samalba/dockerclient"
 	"net"
-	
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
-	"github.com/aacebedo/tidegate/src/patterns"
 	"time"
 )
 
 type TideGatePortDescriptor struct {
-	Port uint64
-	IsSSL  bool
+	Port  uint64
+	IsSSL bool
 }
 
 type TideGateDescriptor struct {
@@ -84,7 +83,7 @@ func (self *DockerManager) Start() (err error) {
 		}
 	}
 
-	self.eventStopChan = make(chan struct{})
+	
 
 	go func() {
 		eventErrChan, err := self.client.MonitorEvents(&dockerclient.MonitorEventsOptions{int(now), 0, nil}, self.eventStopChan)
@@ -140,6 +139,7 @@ func (self *DockerManager) HandleContainerStop(container *dockerclient.Container
 	if labelIsPresent && len(container.NetworkSettings.Ports) != 0 {
 		var descriptor TideGateDescriptor
 		var err = json.Unmarshal([]byte(label), &descriptor)
+		
 		if err == nil {
 
 			for k, v := range container.NetworkSettings.Ports {
@@ -166,7 +166,19 @@ func (self *DockerManager) HandleContainerStop(container *dockerclient.Container
 							}
 							client := &http.Client{Transport: tr}
 							_, err = client.Get(fmt.Sprintf("https://%v:%v/", ip, internalPort))*/
-							val := ContainerEndpointRemovalEvent{&ContainerEndpoint{descriptor.Domain, ip, int64(servicePort2), int64(internalPort), isSSL}}
+							scheme := "http"
+							if isSSL {
+								scheme = "https"
+							}
+							val := ContainerEndpointRemovalEvent{&ContainerEndpoint{
+								descriptor.Domain,
+								fmt.Sprintf("%v:%v",
+									ip.String(),
+									servicePort2),
+								fmt.Sprintf("%v:%v",
+									ip.String(),
+									internalPort),
+								scheme}}
 							self.observable.NotifyObservers(&val)
 
 						} else {
@@ -217,13 +229,15 @@ func (self *DockerManager) HandleContainerStart(container *dockerclient.Containe
 	if labelIsPresent && len(container.NetworkSettings.Ports) != 0 {
 		var descriptor TideGateDescriptor
 		var err = json.Unmarshal([]byte(label), &descriptor)
+		
 		if err == nil {
 			for k, v := range container.NetworkSettings.Ports {
 				servicePort := strings.Split(k, "/")
 				if len(v) != 0 {
 					servicePort2, err := strconv.Atoi(servicePort[0])
+  					
 					internalPort, err := strconv.Atoi(v[0].HostPort)
-					
+
 					isSSL := false
 					isPublished := false
 
@@ -242,7 +256,19 @@ func (self *DockerManager) HandleContainerStart(container *dockerclient.Containe
 							}
 							client := &http.Client{Transport: tr}
 							_, err = client.Get(fmt.Sprintf("https://%v:%v/", ip, internalPort))*/
-							val :=ContainerEndpointAdditionEvent{&ContainerEndpoint{descriptor.Domain, ip, int64(servicePort2), int64(internalPort), isSSL}}
+							scheme := "http"
+							if isSSL {
+								scheme = "https"
+							}
+							val := ContainerEndpointAdditionEvent{&ContainerEndpoint{
+								descriptor.Domain,
+								fmt.Sprintf("0.0.0.0:%v",
+									servicePort2),
+								fmt.Sprintf("%v:%v",
+									ip.String(),
+									internalPort),
+								scheme}}
+
 							self.observable.NotifyObservers(&val)
 
 						} else {
@@ -273,7 +299,7 @@ func NewDockerManager(dockerAddr string) (res *DockerManager, err error) {
 	res.client, _ = dockerclient.NewDockerClient(dockerAddr, nil)
 	info, _ := res.client.Info()
 	logger.Errorf("%v", info)
-
+  res.eventStopChan = make(chan struct{})
 	//res.servers = servers
 	res.daemonAddr = dockerAddr
 	res.observable = patterns.NewBasicObservable()
