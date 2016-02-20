@@ -7,7 +7,7 @@ type ContainerEndpoint struct {
 	Domain       string
 	InternalHostPort string
 	ExternalHostPort string
-	scheme        string
+	Scheme        string
 }
 
 type ContainerEndpointAdditionEvent struct {

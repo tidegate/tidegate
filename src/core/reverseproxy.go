@@ -163,7 +163,7 @@ func (self *TidegateServer) ListenAndServe() (err error) {
 	ln, err := net.Listen("tcp", self.server.Addr)
 	if err == nil {
 		logger.Debugf("Started!")
-		self.server.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
+		go self.server.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
 	} else {
 		logger.Debugf("Not started %v", err)
 	}
