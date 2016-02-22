@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"reflect"
-	"regexp"
 )
 
 type ServerManager struct {
@@ -31,11 +30,11 @@ func NewServerManager(certmgr *CertificateManager) (res *ServerManager) {
 	return
 }
 
-func (self *ServerManager) AddServer(hostPort string) (res *TidegateServer) {
+func (self *ServerManager) AddServer(hostPort string, factory TidegateServerEngineFactory) (res *TidegateServer) {
 	if server, ok := self.servers[hostPort]; !ok {
 		res = NewTidegateServer(hostPort)
 		self.servers[hostPort] = res
-		res.ListenAndServe()
+		res.ListenAndServe(factory)
 		logger.Debugf("Add new server: %v", hostPort)
 	} else {
 		res = server
@@ -126,43 +125,45 @@ func (self *ServerManager) HandleEvent(value interface{}) {
 		if err != nil {
 			logger.Fatalf("Unable to parse host and port")
 		}
-		server := self.AddServer(fmt.Sprintf("%v:%v", host, 443))
-		if !server.Contains(event.Endpoint.Domain) {
-			re, err := regexp.Compile(`/.well-known/acme-challenge/.*`)
-			if err == nil {
-				proxy := server.AddReverseProxy(event.Endpoint.Domain, re)
-				proxy.AddEndpoint(&url.URL{
-					Scheme: "https",
-					Host:   "0.0.0.0:444",
-				})
-			}
-		}
 
-		server = self.AddServer(fmt.Sprintf("%v:%v", host, 80))
-		if !server.Contains(event.Endpoint.Domain) {
-			re, err := regexp.Compile(`/.well-known/acme-challenge/.*`)
-			if err == nil {
-				proxy := server.AddReverseProxy(event.Endpoint.Domain, re)
-				proxy.AddEndpoint(&url.URL{
-					Scheme: "http",
-					Host:   "0.0.0.0:81",
-				})
-			}
-		}
-		catchAllRe, err := regexp.Compile(".*")
-		if event.Endpoint.Scheme == "https" {
-			_, err = self.certmgr.GetCertificate(event.Endpoint.Domain)
-			if err != nil {
-				logger.Errorf("%v", err)
-			}
-		} else {
-			server = self.AddServer(event.Endpoint.InternalHostPort)
-			proxy := server.AddReverseProxy(event.Endpoint.Domain, catchAllRe)
-			proxy.AddEndpoint(&url.URL{
+//		server := self.AddServer(fmt.Sprintf("%v:%v", host, 443),&TidegateTLSServerEngineFactory{})
+//		server.AddEndpoint(&url.URL{
+//			Scheme:  "https",
+//			Host:    fmt.Sprintf("%v:%v", host, 443),
+//			RawPath: "/.well-known/acme-challenge/.*",
+//		},
+//			&url.URL{
+//				Scheme: "https",
+//				Host:   "0.0.0.0:444",
+//			})
+
+		server := self.AddServer(fmt.Sprintf("%v:%v", host, 80),&TidegateSimpleServerEngineFactory{})
+		server.AddEndpoint(&url.URL{
+			Scheme:  "https",
+			Host:    fmt.Sprintf("%v:%v", host, 80),
+			RawPath: "/.well-known/acme-challenge/.*",
+		},
+			&url.URL{
 				Scheme: "http",
-				Host:   event.Endpoint.ExternalHostPort,
+				Host:   "0.0.0.0:81",
 			})
-		}
+
+		//		catchAllRe, err := regexp.Compile(".*")
+		//		if event.Endpoint.Scheme == "https" {
+		//			_, err = self.certmgr.GetCertificate(event.Endpoint.Domain)
+		//			if err != nil {
+		//				logger.Errorf("%v", err)
+		//			}
+		//		} else {
+		server = self.AddServer(event.Endpoint.InternalHostPort,&TidegateSimpleServerEngineFactory{})
+		server.AddEndpoint(&url.URL{
+			Scheme: "http",
+			Host:   event.Endpoint.InternalHostPort,
+		}, &url.URL{
+			Scheme: "http",
+			Host:   event.Endpoint.ExternalHostPort,
+		})
+		//}
 
 		//_, err = self.certmgr.GetCertificate(event.Endpoint.Domain)
 		//if err != nil {
